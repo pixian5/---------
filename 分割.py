@@ -7,7 +7,6 @@ import os
 import re
 from pathlib import Path
 
-
 # 每个文件包含的章节数
 CHAPTERS_PER_FILE = 20
 class NovelSplitter:
@@ -100,8 +99,8 @@ class NovelSplitter:
         chapters = []
 
         # 章节标题匹配模式（支持如：第1章．神奇的任务）
-        # 兼容前导全角空格，并允许章后出现常见分隔符（．。.:：、空格等）
-        chapter_pattern = r'(^[ \t\u3000]*第[一二三四五六七八九十百千万零\d]+章(?:[．。.:：、\s—-]*[^\n]*)?$)'
+        # 注意：这里不能使用 \s（会匹配换行），否则会把下一行正文误并入章节标题
+        chapter_pattern = r'(^[ \t\u3000]*第[一二三四五六七八九十百千万零\d]+章(?:[．。.:：、 \t\u3000—-]*[^\n]*)?$)'
 
         # 分割文本
         parts = re.split(chapter_pattern, content, flags=re.MULTILINE)
