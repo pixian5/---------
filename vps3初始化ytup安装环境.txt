@@ -1,0 +1,103 @@
+# 环境初始化并把 ikuuu自动签到.py 做成 systemd 开机自启服务（纯净日志版）
+cat << 'EOF' > /root/olived/setup_tmux_systemd.sh
+#!/usr/bin/env bash
+set -euo pipefail
+
+APP_DIR="/root/olived"
+SERVICE="ik"
+SYSLOG_ID="ikuuu"
+PY_BIN="python3"
+
+echo "==> [1/8] 安装系统依赖（python / venv）"
+#apt update
+apt install -y python-is-python3 python3-venv ca-certificates
+
+echo "==> [2/8] 准备项目目录"
+mkdir -p "${APP_DIR}"
+cd "${APP_DIR}"
+
+echo "==> [3/8] 创建或重建虚拟环境 .venvikuuu"
+if [ ! -x ".venvikuuu/bin/python" ]; then
+  rm -rf .venvikuuu || true
+  ${PY_BIN} -m venv .venvikuuu
+fi
+
+echo "==> [4/8] 升级 pip（使用 虚拟环境 内 python）"
+.venvikuuu/bin/python -m pip install --upgrade pip
+
+echo "==> [5/8] 安装 Python 依赖（ikuuu 自动签到）"
+.venvikuuu/bin/python -m pip install \
+  requests \
+  beautifulsoup4
+
+
+echo "==> [6/8] 写入运行脚本 runikuuu.sh（unbuffered 实时输出）"
+cat << 'RUN_EOF' > "${APP_DIR}/runikuuu.sh"
+#!/usr/bin/env bash
+set -euo pipefail
+cd /root/olived
+
+# 直接使用 venv 内 python，避免任何 PATH/alias 干扰
+exec /root/olived/.venvikuuu/bin/python -u ikuuu自动签到.py
+RUN_EOF
+chmod +x "${APP_DIR}/runikuuu.sh"
+
+echo "==> [7/8] 写入 systemd 服务（只输出程序日志）"
+cat << UNIT_EOF > "/etc/systemd/system/${SERVICE}.service"
+[Unit]
+Description=ikuuu auto check-in (systemd)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=${APP_DIR}
+ExecStart=/usr/bin/bash -lc '${APP_DIR}/runikuuu.sh'
+Restart=always
+RestartSec=5
+SyslogIdentifier=${SYSLOG_ID}
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+UNIT_EOF
+
+echo "==> [8/8] 启动服务 + 安装 up 命令（纯净输出）"
+systemctl daemon-reload
+systemctl enable "${SERVICE}"
+systemctl restart "${SERVICE}"
+
+# 安装 ik 命令（永久）
+mkdir -p /root/.bashrc.d
+cat << 'ALIAS_EOF' > /root/.bashrc.d/ik-aliases.sh
+# ik：只显示程序 print 的内容（绝对纯净）
+alias ik='journalctl -f -o cat SYSLOG_IDENTIFIER=ikuuu'
+ALIAS_EOF
+
+# 确保 bashrc 会加载 bashrc.d（安全 marker）
+if ! grep -q 'Load extra aliases from ~/.bashrc.d' /root/.bashrc 2>/dev/null; then
+  cat << 'BASHRC_EOF' >> /root/.bashrc
+
+# Load extra aliases from ~/.bashrc.d
+if [ -d "$HOME/.bashrc.d" ]; then
+  for f in "$HOME/.bashrc.d"/*.sh; do
+    [ -r "$f" ] && . "$f"
+  done
+fi
+BASHRC_EOF
+fi
+
+echo
+echo "================= 完成 ================="
+echo "纯净日志查看：          ik"
+echo "重启服务：              systemctl restart ${SERVICE}"
+echo "停止服务：              systemctl stop ${SERVICE}"
+echo "查看状态：              systemctl status ${SERVICE}"
+echo "退出日志查看：          Ctrl + C（不影响程序）"
+echo "========================================"
+EOF
+
+chmod +x /root/olived/setup_tmux_systemd.sh
+bash /root/olived/setup_tmux_systemd.sh \
+  && source /root/.bashrc.d/ik-aliases.sh \
+  && journalctl -f -o cat SYSLOG_IDENTIFIER=ikuuu

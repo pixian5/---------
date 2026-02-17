@@ -1,0 +1,153 @@
+# 模型: GPT-5 (Codex)
+# 在 VPS 当前目录执行。
+# 请将 *opencode.py 和可选 requirements.txt 放在此目录。
+cat << 'EOF' > ./setup_opencode_systemd.sh
+#!/usr/bin/env bash
+# 模型: GPT-5 (Codex)
+set -euo pipefail
+
+APP_DIR="${APP_DIR:-$PWD}"
+SERVICE="${SERVICE:-zj-opencode}"
+SYSLOG_ID="${SYSLOG_ID:-zjopencode}"
+VENV_DIR=".venv"
+RUN_SCRIPT="${APP_DIR}/run-opencode.sh"
+ZJ_CMD_PATH="/usr/local/bin/zj"
+PROFILE_D="/etc/profile.d/zj-opencode.sh"
+ROOT_BASHRC_D="/root/.bashrc.d/zj-opencode.sh"
+
+# 优先使用外部传入的 SCRIPT_NAME；否则在当前目录自动识别 *opencode.py
+if [ -z "${SCRIPT_NAME:-}" ]; then
+  SCRIPT_NAME="$(ls -1 *opencode.py 2>/dev/null | head -n1 || true)"
+fi
+
+if [ -z "${SCRIPT_NAME}" ]; then
+  echo "错误：SCRIPT_NAME 为空，且在 ${APP_DIR} 未找到 *opencode.py"
+  exit 1
+fi
+
+if [ ! -f "${APP_DIR}/${SCRIPT_NAME}" ]; then
+  echo "错误：未找到 ${APP_DIR}/${SCRIPT_NAME}"
+  exit 1
+fi
+
+echo "==> [1/10] 安装系统依赖（python / venv）"
+apt update
+apt install -y python-is-python3 python3-venv ca-certificates
+
+echo "==> [2/10] 准备工作目录"
+mkdir -p "${APP_DIR}"
+cd "${APP_DIR}"
+
+echo "==> [3/10] 按需创建虚拟环境：${VENV_DIR}"
+if [ ! -x "${VENV_DIR}/bin/python" ]; then
+  rm -rf "${VENV_DIR}" || true
+  python3 -m venv "${VENV_DIR}"
+fi
+
+echo "==> [4/10] 升级虚拟环境中的 pip"
+"${VENV_DIR}/bin/python" -m pip install --upgrade pip
+
+echo "==> [5/10] 安装 Python 依赖（优先 requirements.txt，否则 requests）"
+if [ -f "requirements.txt" ]; then
+  "${VENV_DIR}/bin/python" -m pip install -r requirements.txt
+else
+  "${VENV_DIR}/bin/python" -m pip install requests
+fi
+
+echo "==> [6/10] 写入运行脚本：${RUN_SCRIPT}"
+cat << RUN_EOF > "${RUN_SCRIPT}"
+#!/usr/bin/env bash
+set -euo pipefail
+cd "${APP_DIR}"
+exec "${APP_DIR}/${VENV_DIR}/bin/python" -u "${APP_DIR}/${SCRIPT_NAME}"
+RUN_EOF
+chmod +x "${RUN_SCRIPT}"
+
+echo "==> [7/10] 安装 systemd 服务：${SERVICE}.service"
+cat << UNIT_EOF > "/etc/systemd/system/${SERVICE}.service"
+[Unit]
+Description=OpenCode Novel Summary Service
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=${APP_DIR}
+ExecStart=${RUN_SCRIPT}
+Restart=always
+RestartSec=5
+SyslogIdentifier=${SYSLOG_ID}
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+UNIT_EOF
+
+echo "==> [8/10] 立即启动服务（不设置开机自启）"
+systemctl daemon-reload
+systemctl disable "${SERVICE}" >/dev/null 2>&1 || true
+systemctl start "${SERVICE}"
+
+echo "==> [9/10] 安装 zj 命令（仅看 journald 日志）"
+cat << ZJ_EOF > "${ZJ_CMD_PATH}"
+#!/usr/bin/env bash
+set -euo pipefail
+exec journalctl -f -o cat SYSLOG_IDENTIFIER=${SYSLOG_ID}
+ZJ_EOF
+chmod +x "${ZJ_CMD_PATH}"
+
+echo "==> [10/10] 固化 zj 到登录环境（防止重连后命中旧命令）"
+cat << 'PROFILE_EOF' > "${PROFILE_D}"
+# zj-opencode: force zj to /usr/local/bin/zj in interactive shells
+case "$-" in
+  *i*)
+    unalias zj 2>/dev/null || true
+    unset -f zj 2>/dev/null || true
+    alias zj='/usr/local/bin/zj'
+    ;;
+esac
+PROFILE_EOF
+chmod 644 "${PROFILE_D}"
+
+mkdir -p /root/.bashrc.d
+cat << 'BASHRC_D_EOF' > "${ROOT_BASHRC_D}"
+unalias zj 2>/dev/null || true
+unset -f zj 2>/dev/null || true
+alias zj='/usr/local/bin/zj'
+BASHRC_D_EOF
+
+if ! grep -q 'Load extra aliases from ~/.bashrc.d' /root/.bashrc 2>/dev/null; then
+  cat << 'BASHRC_LOADER_EOF' >> /root/.bashrc
+
+# Load extra aliases from ~/.bashrc.d
+if [ -d "$HOME/.bashrc.d" ]; then
+  for f in "$HOME/.bashrc.d"/*.sh; do
+    [ -r "$f" ] && . "$f"
+  done
+fi
+BASHRC_LOADER_EOF
+fi
+
+# 对当前 shell 立即生效
+unalias zj 2>/dev/null || true
+unset -f zj 2>/dev/null || true
+hash -r
+alias zj='/usr/local/bin/zj'
+
+echo
+echo "================= 完成 ================="
+echo "服务名：         ${SERVICE}"
+echo "查看状态：       systemctl status ${SERVICE}"
+echo "启动服务：       systemctl start ${SERVICE}"
+echo "停止服务：       systemctl stop ${SERVICE}"
+echo "仅看日志：       zj"
+echo "退出日志跟随：   Ctrl+C（后台服务继续运行）"
+echo "验证命令来源：   type -a zj"
+echo "========================================"
+EOF
+
+chmod +x ./setup_opencode_systemd.sh
+bash ./setup_opencode_systemd.sh
+
+type -a zj || true
+zj
