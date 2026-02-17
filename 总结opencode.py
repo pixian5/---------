@@ -13,7 +13,7 @@ except ImportError:
 import urllib.request
 
 #线程数
-THREAD_COUNT = 10
+THREAD_COUNT = 20
 
 API_URL = "https://opencode.ai/zen/v1/chat/completions"
 API_KEY = "sk-LbbDOpqt28LlYqZk0YKwsPUlzNYXfdHMw0MEBAAY03HvL6DocQXyMsJXzqGwzBLc"
@@ -23,7 +23,7 @@ MODEL = "minimax-m2.5-free"
 MAX_INPUT_CHARS = 0
 REQUEST_CONNECT_TIMEOUT = 20
 REQUEST_READ_TIMEOUT = 40
-RETRY_TIMES = 3
+RETRY_TIMES = 13
 RETRY_DELAY = 3
 FILE_RETRY_TIMES = 2
 FILE_RETRY_DELAY = 8
@@ -146,8 +146,8 @@ def call_api(messages: list, file_name: str = "") -> str:
     payload = {
         "model": MODEL,
         "messages": messages,
-        "temperature": 0.1,
-        #"max_tokens": 1000,
+        "temperature": 1.9,
+        #"max_output_tokens": 1500,
     }
     headers = DEFAULT_HEADERS.copy()
 
