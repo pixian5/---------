@@ -1,7 +1,8 @@
 import json
 import time
+import threading
 from pathlib import Path
-from typing import List
+from typing import List, Optional, Tuple
 import urllib.error
 
 try:
@@ -11,6 +12,8 @@ except ImportError:
 
 import urllib.request
 
+#线程数
+THREAD_COUNT = 10
 
 API_URL = "https://opencode.ai/zen/v1/chat/completions"
 API_KEY = "sk-LbbDOpqt28LlYqZk0YKwsPUlzNYXfdHMw0MEBAAY03HvL6DocQXyMsJXzqGwzBLc"
@@ -22,6 +25,8 @@ REQUEST_CONNECT_TIMEOUT = 20
 REQUEST_READ_TIMEOUT = 40
 RETRY_TIMES = 3
 RETRY_DELAY = 3
+FILE_RETRY_TIMES = 2
+FILE_RETRY_DELAY = 8
 DEFAULT_HEADERS = {
     "Authorization": f"Bearer {API_KEY}",
     "Content-Type": "application/json",
@@ -33,6 +38,46 @@ DEFAULT_HEADERS = {
         "Chrome/145.0.0.0 Safari/537.36"
     ),
 }
+
+
+def _retry_delay_seconds(attempt: int, base_delay: int) -> int:
+    # Exponential backoff: 1x, 2x, 4x...
+    return base_delay * (2 ** (attempt - 1))
+
+
+def _extract_http_status(exc: Exception) -> Optional[int]:
+    if requests is not None and isinstance(exc, requests.exceptions.HTTPError):
+        if exc.response is not None:
+            return exc.response.status_code
+        return None
+    if isinstance(exc, urllib.error.HTTPError):
+        return exc.code
+    return None
+
+
+def _is_retryable_exception(exc: Exception) -> bool:
+    status = _extract_http_status(exc)
+    if status is not None:
+        return status == 429 or status >= 500
+
+    if requests is not None and isinstance(
+        exc, (requests.exceptions.Timeout, requests.exceptions.ConnectionError)
+    ):
+        return True
+
+    if isinstance(exc, (urllib.error.URLError, TimeoutError)):
+        return True
+
+    msg = str(exc).lower()
+    transient_words = (
+        "timed out",
+        "timeout",
+        "temporarily unavailable",
+        "connection reset",
+        "connection aborted",
+        "remote end closed",
+    )
+    return any(word in msg for word in transient_words)
 
 
 def find_input_dir() -> Path:
@@ -94,15 +139,15 @@ def _post_with_urllib(payload: dict, headers: dict) -> dict:
         raise RuntimeError(f"HTTP {e.code}: {detail[:300]}") from e
 
 
-def call_api(messages: list) -> str:
+def call_api(messages: list, file_name: str = "") -> str:
     if not API_KEY:
         raise ValueError("API_KEY 为空，请在脚本中填写或改为环境变量")
 
     payload = {
         "model": MODEL,
         "messages": messages,
-        "temperature": 0.6,
-        "max_tokens": 1000,
+        "temperature": 0.1,
+        #"max_tokens": 1000,
     }
     headers = DEFAULT_HEADERS.copy()
 
@@ -123,44 +168,143 @@ def call_api(messages: list) -> str:
             return result["choices"][0]["message"]["content"].strip()
         except Exception as exc:
             last_err = exc
-            if attempt < RETRY_TIMES:
-                time.sleep(RETRY_DELAY)
+            can_retry = _is_retryable_exception(exc)
+            if attempt < RETRY_TIMES and can_retry:
+                wait_seconds = _retry_delay_seconds(attempt, RETRY_DELAY)
+                file_hint = f" ({file_name})" if file_name else ""
+                print(
+                    f"{time.strftime('%H:%M:%S')} [{MODEL}] API 请求失败{file_hint}，"
+                    f"第 {attempt}/{RETRY_TIMES} 次：{exc}；{wait_seconds}s 后重试",
+                    flush=True,
+                )
+                time.sleep(wait_seconds)
+                continue
+            if attempt < RETRY_TIMES and not can_retry:
+                print(
+                    f"{time.strftime('%H:%M:%S')} [{MODEL}] API 请求错误不可重试：{exc}",
+                    flush=True,
+                )
+            break
 
     raise RuntimeError(f"API 调用失败（模型: {MODEL}）：{last_err}")
 
 
 def summarize_one_file(file_path: Path) -> str:
     text = read_text(file_path, max_chars=MAX_INPUT_CHARS)
-    return call_api(build_messages(text))
+    return call_api(build_messages(text), file_path.name)
 
 
-def summarize_files(files: List[Path], output_file: Path) -> None:
-    print(f"[{MODEL}] 开始处理，共 {len(files)} 个 TXT 文件...", flush=True)
+def summarize_one_file_with_retry(
+    file_path: Path, idx: int, total: int, thread_id: int
+) -> str:
+    thread_name = f"线程{thread_id}"
+    print(
+        f"{time.strftime('%H:%M:%S')} [{MODEL}] [{thread_name}] [{idx}/{total}] 开始 {file_path.name}",
+        flush=True,
+    )
 
-    # 启动即创建/清空输出文件，确保运行过程中可见
-    output_file.write_text("", encoding="utf-8")
-    print(f"[{MODEL}] 输出文件: {output_file.resolve()}", flush=True)
-
-    for idx, file_path in enumerate(files, start=1):
-        print(
-            f"{time.strftime('%H:%M:%S')} [{MODEL}] [{idx}/{len(files)}] 开始 {file_path.name}",
-            flush=True,
-        )
+    summary = None
+    last_exc = None
+    for file_attempt in range(1, FILE_RETRY_TIMES + 1):
         try:
             summary = summarize_one_file(file_path)
             print(
-                f"{time.strftime('%H:%M:%S')} [{MODEL}] [{idx}/{len(files)}] 完成 {file_path.name}",
+                f"{time.strftime('%H:%M:%S')} [{MODEL}] [{thread_name}] [{idx}/{total}] 完成 {file_path.name}",
                 flush=True,
             )
+            break
         except Exception as exc:
-            summary = f"[总结失败] {exc}"
-            print(f"[{MODEL}] [{idx}/{len(files)}] 失败 {file_path.name}: {exc}", flush=True)
+            last_exc = exc
+            if file_attempt < FILE_RETRY_TIMES:
+                wait_seconds = _retry_delay_seconds(file_attempt, FILE_RETRY_DELAY)
+                print(
+                    f"{time.strftime('%H:%M:%S')} [{MODEL}] [{thread_name}] [{idx}/{total}] "
+                    f"失败 {file_path.name}（文件级重试第 {file_attempt}/{FILE_RETRY_TIMES} 次）: {exc}；"
+                    f"{wait_seconds}s 后重试",
+                    flush=True,
+                )
+                time.sleep(wait_seconds)
+            else:
+                print(
+                    f"[{MODEL}] [{thread_name}] [{idx}/{total}] 失败 {file_path.name}: {exc}",
+                    flush=True,
+                )
 
-        part = f"第{file_path.name}章总结：{MODEL}\n{'=' * 40}\n{summary}"
-        with output_file.open("a", encoding="utf-8") as f:
+    if summary is None:
+        summary = f"[总结失败] {last_exc}"
+    return summary
+
+
+def _index_width(total: int) -> int:
+    return max(1, len(str(total)))
+
+
+def _tmp_part_path(tmp_dir: Path, idx: int, total: int) -> Path:
+    width = _index_width(total)
+    return tmp_dir / f"{idx:0{width}d}.txt"
+
+
+def summarize_files(files: List[Path], output_file: Path) -> None:
+    total = len(files)
+    print(f"[{MODEL}] 开始处理，共 {total} 个 TXT 文件，使用 {THREAD_COUNT} 线程...", flush=True)
+
+    tmp_dir = Path("tmp")
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    for old_file in tmp_dir.glob("*.txt"):
+        old_file.unlink()
+
+    print(f"[{MODEL}] 输出文件: {output_file.resolve()}", flush=True)
+    print(f"[{MODEL}] 临时目录: {tmp_dir.resolve()}", flush=True)
+
+    indexed_files = list(enumerate(files, start=1))
+    thread_buckets = [indexed_files[i::THREAD_COUNT] for i in range(THREAD_COUNT)]
+    for thread_id, bucket in enumerate(thread_buckets, start=1):
+        print(f"[{MODEL}] 线程{thread_id} 分配 {len(bucket)} 个文件", flush=True)
+
+    def worker(thread_id: int, assigned_files: List[Tuple[int, Path]]) -> None:
+        if not assigned_files:
+            print(f"[{MODEL}] 线程{thread_id} 无任务", flush=True)
+            return
+
+        for idx, file_path in assigned_files:
+            summary = summarize_one_file_with_retry(file_path, idx, total, thread_id)
+            part = f"第{file_path.name}章总结：{MODEL}\n{'=' * 40}\n{summary}"
+            part_file = _tmp_part_path(tmp_dir, idx, total)
+            part_file.write_text(part, encoding="utf-8")
+            print(
+                f"{time.strftime('%H:%M:%S')} [{MODEL}] [线程{thread_id}] [{idx}/{total}] "
+                f"已写入临时文件 {part_file.name}",
+                flush=True,
+            )
+
+    threads: List[threading.Thread] = []
+    for thread_id, assigned_files in enumerate(thread_buckets, start=1):
+        t = threading.Thread(
+            target=worker,
+            args=(thread_id, assigned_files),
+            name=f"summary-worker-{thread_id}",
+            daemon=False,
+        )
+        t.start()
+        threads.append(t)
+
+    for t in threads:
+        t.join()
+
+    print(f"[{MODEL}] 所有线程完成，开始合并临时文件...", flush=True)
+    with output_file.open("w", encoding="utf-8") as out:
+        for idx, file_path in indexed_files:
+            part_file = _tmp_part_path(tmp_dir, idx, total)
+            if part_file.exists():
+                part_content = part_file.read_text(encoding="utf-8", errors="ignore")
+            else:
+                part_content = (
+                    f"第{file_path.name}章总结：{MODEL}\n{'=' * 40}\n"
+                    f"[总结失败] 缺少临时文件 {part_file.name}"
+                )
             if idx > 1:
-                f.write("\n\n")
-            f.write(part)
+                out.write("\n\n")
+            out.write(part_content)
 
     print(f"[{MODEL}] 完成，已输出到：{output_file}", flush=True)
 
