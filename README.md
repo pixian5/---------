@@ -64,9 +64,11 @@
    pip install anthropic
    ```
 
-2. **配置API密钥**（选择一种方式）
+2. **配置API密钥**
 
-   **方式1：环境变量（推荐）**
+   `总结.py` 使用 `OPENAI_API_KEY`，`总结opencode.py` 使用 `OPENCODE_API_KEYS`。
+
+   单 Key：
    ```bash
    # Linux/Mac
    export OPENAI_API_KEY="your-api-key-here"
@@ -78,9 +80,13 @@
    $env:OPENAI_API_KEY="your-api-key-here"
    ```
 
-   **方式2：直接修改代码**
+   多 Key 轮换：
    ```python
-   API_KEY = "your-api-key-here"  # 在代码中填写
+   # Linux / macOS
+   export OPENCODE_API_KEYS="key-1,key-2,key-3"
+
+   # Windows PowerShell
+   $env:OPENCODE_API_KEYS="key-1,key-2,key-3"
    ```
 
 ### 使用方法
@@ -93,7 +99,6 @@
    OUTPUT_FILE = "总结.txt"              # 输出文件名
 
    # API配置
-   API_KEY = ""                         # API密钥（或设置环境变量）
    API_BASE = ""                        # API基础URL（可选）
    MODEL = "gpt-3.5-turbo"              # 模型名称
    PROVIDER = "openai"                  # 提供商
@@ -136,6 +141,7 @@ cp /path/to/your/novel.txt ./
 
 # 3. 设置API密钥（用于总结程序）
 export OPENAI_API_KEY="sk-xxxxxxxx"
+export OPENCODE_API_KEYS="key-1,key-2"
 
 # 4. 运行分割程序
 python novel_splitter.py
@@ -167,9 +173,16 @@ iconv -f GBK -t UTF-8 input.txt > output.txt
 ### Q3: API调用失败？
 **A:** 
 - 检查API密钥是否正确
+- 检查是否已经设置 `OPENAI_API_KEY` 或 `OPENCODE_API_KEYS`
 - 检查网络连接
 - 检查API余额是否充足
 - 查看具体的错误信息
+
+## 七、安全说明
+
+- 仓库中不再保存真实 API Key
+- 请只通过环境变量注入密钥，不要再次写回脚本
+- 如果你习惯本地私有文件，可自行创建未纳入版本控制的 `.env` 或 `private.env` 后再 `source`
 
 ### Q4: 总结内容太长/太短？
 **A:** 修改 `MIN_LENGTH` 和 `MAX_LENGTH` 参数

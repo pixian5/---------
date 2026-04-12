@@ -1,4 +1,5 @@
 ﻿import json
+import os
 import time
 from pathlib import Path
 from typing import List
@@ -12,7 +13,7 @@ import urllib.request
 
 
 API_URL = "https://aihubmix.com/v1/chat/completions"
-API_KEY = "REDACTED_OPENAI_API_KEY"
+API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 MODELS = [
     "gpt-4.1-free",
     "coding-glm-5-free",
@@ -84,7 +85,7 @@ def _post_with_urllib(payload: dict, headers: dict) -> dict:
 
 def call_api(messages: list, model: str) -> str:
     if not API_KEY:
-        raise ValueError("API_KEY 为空，请在脚本中填写或改为环境变量")
+        raise ValueError("OPENAI_API_KEY 未设置，请先在环境变量中配置")
 
     payload = {"model": model, "messages": messages, "temperature": 0.6}
     headers = {

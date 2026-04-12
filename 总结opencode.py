@@ -1,4 +1,5 @@
 import json
+import os
 import time
 import threading
 import re
@@ -22,12 +23,7 @@ START_INDEX = 1
 THREAD_COUNT = 20
 Words=2000
 API_URL = "https://opencode.ai/zen/v1/chat/completions"
-API_KEYS = [
-    "REDACTED_OPENCODE_API_KEY_1",
-    "REDACTED_OPENCODE_API_KEY_2",
-    "REDACTED_OPENCODE_API_KEY_3",
-    "REDACTED_OPENCODE_API_KEY_4",
-]
+API_KEYS_ENV = os.getenv("OPENCODE_API_KEYS", "")
 MODEL = "minimax-m2.5-free"
 
 # 0 表示不截断，完整读取文件
@@ -68,7 +64,8 @@ def _mask_api_key(api_key: str) -> str:
 
 
 def _available_api_keys() -> List[str]:
-    return [key.strip() for key in API_KEYS if key and key.strip()]
+    raw_parts = re.split(r"[\n,\r]+", API_KEYS_ENV)
+    return [key.strip() for key in raw_parts if key and key.strip()]
 
 
 def _pick_random_key_index(key_count: int, excluded_indices: set) -> Optional[int]:
